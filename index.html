@@ -173,6 +173,16 @@
                     <a href="#calculo-vectorial"><span style="color: red;">C&aacute;lculo vectorial</span></a><br>
                 </p>                
             </div>
+
+            <div class="content-section" id="calculo-integral">
+                <h3>Cálculo Integral</h3>
+                <p>Content about Cálculo Integral - syllabus, materials, etc.</p>
+                </div>
+
+            <div class="content-section" id="calculo-vectorial">
+                <h3>Cálculo Vectorial</h3>
+            <p>Content about Cálculo Vectorial - syllabus, materials, etc.</p>
+            </div>
             
             <div class="content-section" id="research">
                 <h2>Research</h2>
@@ -246,24 +256,42 @@
     </div>
 
     <script>
-        // Simple navigation functionality
-        const navLinks = document.querySelectorAll('.nav-link');
-        const contentSections = document.querySelectorAll('.content-section');
-        
-        navLinks.forEach(link => {
-            link.addEventListener('click', () => {
-                // Remove active class from all nav links and content sections
-                navLinks.forEach(l => l.classList.remove('active'));
-                contentSections.forEach(s => s.classList.remove('active'));
-                
-                // Add active class to clicked nav link
-                link.classList.add('active');
-                
-                // Show corresponding content section
-                const sectionId = link.getAttribute('data-section');
-                document.getElementById(sectionId).classList.add('active');
-            });
+    // Simple navigation functionality
+    const navLinks = document.querySelectorAll('.nav-link');
+    const contentSections = document.querySelectorAll('.content-section');
+    
+    navLinks.forEach(link => {
+        link.addEventListener('click', () => {
+            // Remove active class from all nav links and content sections
+            navLinks.forEach(l => l.classList.remove('active'));
+            contentSections.forEach(s => s.classList.remove('active'));
+            
+            // Add active class to clicked nav link
+            link.classList.add('active');
+            
+            // Show corresponding content section
+            const sectionId = link.getAttribute('data-section');
+            document.getElementById(sectionId).classList.add('active');
         });
+    });
+    
+    // Handle internal course links
+    document.querySelectorAll('a[href^="#"]').forEach(link => {
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            const targetId = link.getAttribute('href').substring(1);
+            
+            // Hide all sections
+            contentSections.forEach(s => s.classList.remove('active'));
+            navLinks.forEach(l => l.classList.remove('active'));
+            
+            // Show target section
+            const targetSection = document.getElementById(targetId);
+            if (targetSection) {
+                targetSection.classList.add('active');
+            }
+        });
+    });
     </script>
 </body>
 </html>
