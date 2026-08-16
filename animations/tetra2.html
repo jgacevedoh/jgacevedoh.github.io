@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inscribed Tetrahedron Visualizer (Opaque Sphere)</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #0f172a; /* Slate 900 background */
+            font-family: sans-serif;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <!-- Load Three.js and OrbitControls from CDNs -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        // --- 1. Scene Setup ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(2, 2, 3.5);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        container.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // --- 2. Lighting ---
+        // A bit more lighting than the transparent version since the opaque
+        // sphere now needs to read its shape through shading alone.
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+
+        const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.9);
+        dirLight1.position.set(5, 10, 7);
+        scene.add(dirLight1);
+
+        const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.3);
+        dirLight2.position.set(-6, -3, -4);
+        scene.add(dirLight2);
+
+        // --- 3. Mathematical Geometry Setup ---
+        const sphereRadius = 1;
+
+        // Perfect Tetrahedron coordinates scaled to sit precisely on a unit sphere (R=1)
+        const vertices = [
+            new THREE.Vector3( 1,  1,  1).normalize().multiplyScalar(sphereRadius),
+            new THREE.Vector3(-1, -1,  1).normalize().multiplyScalar(sphereRadius),
+            new THREE.Vector3(-1,  1, -1).normalize().multiplyScalar(sphereRadius),
+            new THREE.Vector3( 1, -1, -1).normalize().multiplyScalar(sphereRadius)
+        ];
+
+        // The 4 faces mapped by vertex indices.
+        // Winding order chosen so each face's cross-product normal points OUTWARD.
+        const faces = [
+            [0, 2, 1],
+            [0, 1, 3],
+            [0, 3, 2],
+            [1, 2, 3]
+        ];
+
+        // --- 4. Create the Outer Sphere (now fully opaque) ---
+        const sphereGeo = new THREE.SphereGeometry(sphereRadius, 96, 96);
+        const sphereMat = new THREE.MeshPhongMaterial({
+            color: 0xcbd5e1,   // Light slate — neutral backdrop so the rose curves pop
+            specular: 0x222222,
+            shininess: 12,
+            side: THREE.FrontSide
+        });
+        const sphereMesh = new THREE.Mesh(sphereGeo, sphereMat);
+        scene.add(sphereMesh);
+
+        // --- 5. Create the Inscribed Tetrahedron ---
+        // Note: with the sphere opaque, the tetrahedron sits fully enclosed and
+        // will be hidden behind the sphere's surface — this is expected. The
+        // code is kept in case you want to peek inside later (e.g. by adding
+        // a clipping plane or toggling sphere.visible).
+        const tetraGeo = new THREE.BufferGeometry();
+        const tetraPositions = [];
+
+        faces.forEach(face => {
+            face.forEach(vIdx => {
+                tetraPositions.push(vertices[vIdx].x, vertices[vIdx].y, vertices[vIdx].z);
+            });
+        });
+
+        tetraGeo.setAttribute('position', new THREE.Float32BufferAttribute(tetraPositions, 3));
+        tetraGeo.computeVertexNormals();
+
+        const tetraMat = new THREE.MeshPhongMaterial({
+            color: 0x475569,
+            side: THREE.DoubleSide
+        });
+        const tetraMesh = new THREE.Mesh(tetraGeo, tetraMat);
+        scene.add(tetraMesh);
+
+        const tetraWireMat = new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            wireframe: true
+        });
+        const tetraWireMesh = new THREE.Mesh(tetraGeo, tetraWireMat);
+        scene.add(tetraWireMesh);
+
+        // --- 6. Draw Hyperplane Intersection Curves AS TUBES ON THE SPHERE ---
+        // For a perfect unit tetrahedron, the distance from the center to each
+        // face's supporting plane is exactly R/3.
+        const d = sphereRadius / 3;
+        const circleRadius = Math.sqrt(sphereRadius * sphereRadius - d * d); // sqrt(R^2 - d^2)
+
+        function buildIntersectionTube(centroid, normal, radius, segments = 96) {
+            // Build an orthonormal basis (u, v) perpendicular to the face normal
+            const helper = Math.abs(normal.y) < 0.99 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+            const u = new THREE.Vector3().crossVectors(normal, helper).normalize();
+            const v = new THREE.Vector3().crossVectors(normal, u).normalize();
+
+            const points = [];
+            for (let i = 0; i <= segments; i++) {
+                const theta = (i / segments) * Math.PI * 2;
+                const p = new THREE.Vector3()
+                    .addScaledVector(u, radius * Math.cos(theta))
+                    .addScaledVector(v, radius * Math.sin(theta))
+                    .add(centroid);
+                points.push(p); // every point here has magnitude == sphereRadius exactly
+            }
+
+            const curve = new THREE.CatmullRomCurve3(points, true);
+            return new THREE.TubeGeometry(curve, segments, 0.01, 8, true);
+        }
+
+        faces.forEach(face => {
+            const v0 = vertices[face[0]];
+            const v1 = vertices[face[1]];
+            const v2 = vertices[face[2]];
+
+            const centroid = new THREE.Vector3()
+                .addVectors(v0, v1)
+                .add(v2)
+                .divideScalar(3); // magnitude d, direction = face normal
+
+            const normal = centroid.clone().normalize();
+
+            const tubeGeo = buildIntersectionTube(centroid, normal, circleRadius);
+            const tubeMat = new THREE.MeshBasicMaterial({ color: 0xf43f5e }); // rose curves
+            const tubeMesh = new THREE.Mesh(tubeGeo, tubeMat);
+            scene.add(tubeMesh);
+        });
+
+        // --- 7. Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            scene.rotation.y += 0.003;
+            scene.rotation.x += 0.001;
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // --- 8. Window Resize Handler ---
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>

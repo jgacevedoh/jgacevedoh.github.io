@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inscribed Tetrahedron Visualizer</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #0f172a; /* Slate 900 background */
+            font-family: sans-serif;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <!-- Load Three.js and OrbitControls from CDNs (real file paths, matched versions) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        // --- 1. Scene Setup ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(2, 2, 3.5);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        container.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // --- 2. Lighting ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight1.position.set(5, 10, 7);
+        scene.add(dirLight1);
+
+        // --- 3. Mathematical Geometry Setup ---
+        const sphereRadius = 1;
+
+        // Perfect Tetrahedron coordinates scaled to sit precisely on a unit sphere (R=1)
+        const vertices = [
+            new THREE.Vector3( 1,  1,  1).normalize().multiplyScalar(sphereRadius),
+            new THREE.Vector3(-1, -1,  1).normalize().multiplyScalar(sphereRadius),
+            new THREE.Vector3(-1,  1, -1).normalize().multiplyScalar(sphereRadius),
+            new THREE.Vector3( 1, -1, -1).normalize().multiplyScalar(sphereRadius)
+        ];
+
+        // The 4 faces mapped by vertex indices.
+        // Winding order chosen so each face's cross-product normal points OUTWARD
+        // (away from the origin), which keeps Phong shading consistent across faces.
+        const faces = [
+            [0, 2, 1],
+            [0, 1, 3],
+            [0, 3, 2],
+            [1, 2, 3]
+        ];
+
+        // --- 4. Create the Outer Sphere ---
+        const sphereGeo = new THREE.SphereGeometry(sphereRadius, 64, 64);
+        const sphereMat = new THREE.MeshPhongMaterial({
+            color: 0x38bdf8,      // Sky blue
+            transparent: true,
+            opacity: 0.15,
+            wireframe: false,
+            side: THREE.DoubleSide
+        });
+        const sphereMesh = new THREE.Mesh(sphereGeo, sphereMat);
+        scene.add(sphereMesh);
+
+        // Add subtle grid lines to the sphere surface for depth
+        const sphereWireGeo = new THREE.SphereGeometry(sphereRadius, 24, 24);
+        const sphereWireMat = new THREE.MeshBasicMaterial({
+            color: 0x0ea5e9,
+            wireframe: true,
+            transparent: true,
+            opacity: 0.1
+        });
+        const sphereWiremesh = new THREE.Mesh(sphereWireGeo, sphereWireMat);
+        scene.add(sphereWiremesh);
+
+        // --- 5. Create the Inscribed Tetrahedron ---
+        const tetraGeo = new THREE.BufferGeometry();
+        const tetraPositions = [];
+
+        faces.forEach(face => {
+            face.forEach(vIdx => {
+                tetraPositions.push(vertices[vIdx].x, vertices[vIdx].y, vertices[vIdx].z);
+            });
+        });
+
+        tetraGeo.setAttribute('position', new THREE.Float32BufferAttribute(tetraPositions, 3));
+        tetraGeo.computeVertexNormals();
+
+        const tetraMat = new THREE.MeshPhongMaterial({
+            color: 0x475569,      // Slate solid fill
+            transparent: true,
+            opacity: 0.4,
+            side: THREE.DoubleSide
+        });
+        const tetraMesh = new THREE.Mesh(tetraGeo, tetraMat);
+        scene.add(tetraMesh);
+
+        // Tetrahedron wireframe outline
+        const tetraWireMat = new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            wireframe: true,
+            transparent: true,
+            opacity: 0.7
+        });
+        const tetraWireMesh = new THREE.Mesh(tetraGeo, tetraWireMat);
+        scene.add(tetraWireMesh);
+
+        // --- 6. Calculate & Draw Hyperplane Intersection Curves ---
+        // For a perfect unit tetrahedron, the insphere-type distance from the
+        // center to each face's supporting plane is exactly R/3.
+        const d = sphereRadius / 3;
+        const circleRadius = Math.sqrt(sphereRadius * sphereRadius - d * d); // Pythagoras: r = sqrt(R^2 - d^2)
+
+        faces.forEach(face => {
+            // Find the center (centroid) of the face to get the orientation vector
+            const v0 = vertices[face[0]];
+            const v1 = vertices[face[1]];
+            const v2 = vertices[face[2]];
+
+            const centroid = new THREE.Vector3()
+                .addVectors(v0, v1)
+                .add(v2)
+                .divideScalar(3);
+
+            // Create a flat 2D ring representing the intersection loop
+            const curveGeo = new THREE.RingGeometry(circleRadius - 0.01, circleRadius + 0.01, 64);
+            const curveMat = new THREE.MeshBasicMaterial({
+                color: 0xf43f5e, // Vibrant rose color for the curves
+                side: THREE.DoubleSide
+            });
+            const curveMesh = new THREE.Mesh(curveGeo, curveMat);
+
+            // Shift the circle out to the hyperplane depth
+            curveMesh.position.copy(centroid);
+
+            // Rotate the circle to dynamically align with the face plane normal direction
+            const normal = centroid.clone().normalize();
+            curveMesh.lookAt(centroid.clone().add(normal));
+
+            scene.add(curveMesh);
+        });
+
+        // --- 7. Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Slowly rotate the entire group for passive movement
+            scene.rotation.y += 0.003;
+            scene.rotation.x += 0.001;
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // --- 8. Window Resize Handler ---
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
