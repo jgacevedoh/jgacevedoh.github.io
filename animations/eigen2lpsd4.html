@@ -293,7 +293,7 @@
             // like transparency. We detect that case (gradient length below
             // GRAD_EPS) and fall back to the ordinary mesh-estimated normal
             // there instead, which stays well-behaved even at a singularity.
-            const GRAD_EPS = 1e-3;
+            const GRAD_EPS = 1e-2;
 
             // Mesh-estimated normals as a fallback (computed on a clone so
             // we don't disturb the position/index data used above).
