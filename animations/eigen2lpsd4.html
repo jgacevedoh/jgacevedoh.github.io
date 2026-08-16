@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Semialgebraic Set Visualizer</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #0f172a; /* Slate 900 background, matches the other plots */
+            font-family: sans-serif;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/BufferGeometryUtils.js"></script>
+
+    <script>
+        // ============================================================
+        // 1. Scene / camera / renderer / controls
+        // ============================================================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 100);
+        camera.position.set(2.4, 2.0, 3.2);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        container.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // ============================================================
+        // 2. Lighting
+        // ============================================================
+        scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+
+        const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.85);
+        dirLight1.position.set(5, 10, 7);
+        scene.add(dirLight1);
+
+        const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.35);
+        dirLight2.position.set(-6, -3, -4);
+        scene.add(dirLight2);
+
+        // ============================================================
+        // 3. The scalar fields, ported directly from the Sage code
+        //    x4 = 1 - x - y - z   (hyperplane x1+x2+x3+x4 = 1)
+        //    e2 = sum of pairwise products of x,y,z,x4
+        //    e4 = x*y*z*x4
+        //    f1 = e2            (surface P1)
+        //    f2 = e2^2 - 4*e4   (surface P2)
+        // ============================================================
+        function f1_func(x, y, z) {
+            const x4 = 1.0 - x - y - z;
+            return x * y + x * z + x * x4 + y * z + y * x4 + z * x4;
+        }
+
+        function f2_func(x, y, z) {
+            const x4 = 1.0 - x - y - z;
+            const e2 = x * y + x * z + x * x4 + y * z + y * x4 + z * x4;
+            const e4 = x * y * z * x4;
+            return e2 * e2 - 4.0 * e4;
+        }
+
+        // region masks: keep triangle only where the OTHER surface's
+        // expression is (approximately) non-negative, same "+1e-4" fudge
+        // factor Sage used to avoid a razor-thin sliver at the boundary.
+        function region1(x, y, z) { return f2_func(x, y, z) + 1e-4; } // masks P1
+        function region2(x, y, z) { return f1_func(x, y, z) + 1e-4; } // masks P2
+
+        // Analytic gradients of f1 and f2, derived by hand from the same
+        // expressions above. Using the TRUE mathematical normal at each
+        // point (instead of a normal estimated from the mesh's triangles)
+        // gives exact smooth shading regardless of how coarse the underlying
+        // geometry is -- this is what fixes the faceted look in concave
+        // regions, where mesh-estimated normals are least accurate.
+        //
+        // grad(e2) = (x4-x, x4-y, x4-z)   [a clean simplification]
+        // grad(f1) = grad(e2)
+        // grad(f2) = 2*e2*grad(e2) - 4*grad(e4),
+        //   where grad(e4) = (yz(x4-x), xz(x4-y), xy(x4-z))
+        function gradF1(x, y, z) {
+            const x4 = 1.0 - x - y - z;
+            return [x4 - x, x4 - y, x4 - z];
+        }
+
+        function gradF2(x, y, z) {
+            const x4 = 1.0 - x - y - z;
+            const e2 = x * y + x * z + x * x4 + y * z + y * x4 + z * x4;
+            return [
+                (x4 - x) * (2 * e2 - 4 * y * z),
+                (x4 - y) * (2 * e2 - 4 * x * z),
+                (x4 - z) * (2 * e2 - 4 * x * y)
+            ];
+        }
+
+        // Plotting bounds - identical to the Sage code
+        const bounds = { xmin: -0.6, xmax: 1.1, ymin: -0.6, ymax: 1.1, zmin: -0.6, zmax: 1.1 };
+
+        // ============================================================
+        // 4. Marching tetrahedra isosurface extractor
+        //    (each grid cube is split into 6 tetrahedra via the standard
+        //    Freudenthal decomposition, sharing the (0,0,0)-(1,1,1) diagonal;
+        //    this avoids the giant 256-case lookup table that classic
+        //    marching cubes needs, at the cost of slightly more triangles)
+        //
+        //    RESOLUTION: number of grid divisions per axis. Higher = smoother
+        //    surface but slower to compute and more triangles to render.
+        //    46 is a reasonable balance; try 60-70 for extra smoothness on a
+        //    fast machine, or drop to ~32 if it feels sluggish on mobile.
+        // ============================================================
+        const RESOLUTION = 64;
+
+        function marchingTetrahedra(fieldFunc, maskFunc, bounds, res) {
+            const { xmin, xmax, ymin, ymax, zmin, zmax } = bounds;
+            const dx = (xmax - xmin) / res;
+            const dy = (ymax - ymin) / res;
+            const dz = (zmax - zmin) / res;
+
+            const N = res + 1;
+            const field = new Float32Array(N * N * N);
+            const idx = (i, j, k) => i + j * N + k * N * N;
+            const px = i => xmin + i * dx;
+            const py = j => ymin + j * dy;
+            const pz = k => zmin + k * dz;
+
+            for (let k = 0; k < N; k++) {
+                for (let j = 0; j < N; j++) {
+                    for (let i = 0; i < N; i++) {
+                        field[idx(i, j, k)] = fieldFunc(px(i), py(j), pz(k));
+                    }
+                }
+            }
+
+            // 8 corners of a unit cube, and its 6-tetrahedra split
+            // (all 6 tets share the main diagonal corner0 -> corner6)
+            const cornerOffset = [
+                [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+                [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]
+            ];
+            const tets = [
+                [0, 1, 2, 6], [0, 1, 5, 6], [0, 3, 2, 6],
+                [0, 3, 7, 6], [0, 4, 5, 6], [0, 4, 7, 6]
+            ];
+
+            const positions = [];
+
+            function interp(pA, fA, pB, fB) {
+                const t = fA / (fA - fB);
+                return [
+                    pA[0] + t * (pB[0] - pA[0]),
+                    pA[1] + t * (pB[1] - pA[1]),
+                    pA[2] + t * (pB[2] - pA[2])
+                ];
+            }
+
+            // Clips a convex polygon (as an ordered list of [x,y,z] points)
+            // against the half-space maskFunc(p) >= 0, using linear
+            // interpolation along each edge where the sign changes. This is
+            // the Sutherland-Hodgman algorithm; it preserves vertex order
+            // (and therefore winding/orientation) and produces an exact
+            // per-triangle cut instead of an all-or-nothing keep/discard,
+            // which is what was causing the jagged "staircase" edges.
+            function clipPolygonByMask(poly, maskFunc) {
+                const vals = poly.map(p => maskFunc(p[0], p[1], p[2]));
+                const out = [];
+                const n = poly.length;
+                for (let i = 0; i < n; i++) {
+                    const curr = poly[i], currVal = vals[i];
+                    const next = poly[(i + 1) % n], nextVal = vals[(i + 1) % n];
+                    const currIn = currVal >= 0;
+                    const nextIn = nextVal >= 0;
+                    if (currIn) out.push(curr);
+                    if (currIn !== nextIn) {
+                        const t = currVal / (currVal - nextVal);
+                        out.push([
+                            curr[0] + t * (next[0] - curr[0]),
+                            curr[1] + t * (next[1] - curr[1]),
+                            curr[2] + t * (next[2] - curr[2])
+                        ]);
+                    }
+                }
+                return out; // 0 points (fully outside), or a convex polygon (3-4 points)
+            }
+
+            // Adds a triangle, orienting it so its normal points toward
+            // "outsideRef" (a point known to have field > 0), then clips it
+            // precisely against the region mask (fan-triangulating the
+            // clipped polygon, which is always convex here).
+            function addTri(p0, p1, p2, outsideRef, maskFunc) {
+                const ux = p1[0] - p0[0], uy = p1[1] - p0[1], uz = p1[2] - p0[2];
+                const vx = p2[0] - p0[0], vy = p2[1] - p0[1], vz = p2[2] - p0[2];
+                let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+
+                const ddx = outsideRef[0] - p0[0], ddy = outsideRef[1] - p0[1], ddz = outsideRef[2] - p0[2];
+                const d = nx * ddx + ny * ddy + nz * ddz;
+
+                let a = p0, b = p1, c = p2;
+                if (d < 0) { b = p2; c = p1; } // flip winding
+
+                const clipped = clipPolygonByMask([a, b, c], maskFunc);
+                for (let i = 1; i < clipped.length - 1; i++) {
+                    const p0c = clipped[0], p1c = clipped[i], p2c = clipped[i + 1];
+                    positions.push(
+                        p0c[0], p0c[1], p0c[2],
+                        p1c[0], p1c[1], p1c[2],
+                        p2c[0], p2c[1], p2c[2]
+                    );
+                }
+            }
+
+            for (let k = 0; k < res; k++) {
+                for (let j = 0; j < res; j++) {
+                    for (let i = 0; i < res; i++) {
+                        const cp = cornerOffset.map(([ox, oy, oz]) => [px(i + ox), py(j + oy), pz(k + oz)]);
+                        const cf = cornerOffset.map(([ox, oy, oz]) => field[idx(i + ox, j + oy, k + oz)]);
+
+                        for (const tet of tets) {
+                            const p = tet.map(ci => cp[ci]);
+                            const f = tet.map(ci => cf[ci]);
+                            const inside = f.map(v => v < 0);
+                            const count = inside.filter(Boolean).length;
+
+                            if (count === 0 || count === 4) continue;
+
+                            if (count === 1 || count === 3) {
+                                const isoIdx = count === 1 ? inside.indexOf(true) : inside.indexOf(false);
+                                const others = [0, 1, 2, 3].filter(x => x !== isoIdx);
+                                const A = p[isoIdx], fA = f[isoIdx];
+                                const pts = others.map(oi => interp(A, fA, p[oi], f[oi]));
+                                const outsideRef = count === 1 ? p[others[0]] : p[isoIdx];
+                                addTri(pts[0], pts[1], pts[2], outsideRef, maskFunc);
+                            } else {
+                                // count === 2: quad cross-section -> 2 triangles
+                                const insideIdx = [0, 1, 2, 3].filter(x => inside[x]);
+                                const outsideIdx = [0, 1, 2, 3].filter(x => !inside[x]);
+                                const A = p[insideIdx[0]], fA = f[insideIdx[0]];
+                                const B = p[insideIdx[1]], fB = f[insideIdx[1]];
+                                const C = p[outsideIdx[0]], fC = f[outsideIdx[0]];
+                                const D = p[outsideIdx[1]], fD = f[outsideIdx[1]];
+
+                                const p_AC = interp(A, fA, C, fC);
+                                const p_CB = interp(B, fB, C, fC);
+                                const p_BD = interp(B, fB, D, fD);
+                                const p_DA = interp(A, fA, D, fD);
+
+                                addTri(p_AC, p_CB, p_BD, C, maskFunc);
+                                addTri(p_AC, p_BD, p_DA, C, maskFunc);
+                            }
+                        }
+                    }
+                }
+            }
+
+            return positions;
+        }
+
+        function buildSurfaceMesh(fieldFunc, maskFunc, gradFunc, color) {
+            const positions = marchingTetrahedra(fieldFunc, maskFunc, bounds, RESOLUTION);
+
+            let geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+
+            // Weld coincident vertices so triangles genuinely share vertices
+            // (needed so the analytic normals below line up seamlessly
+            // across triangle boundaries).
+            geo = THREE.BufferGeometryUtils.mergeVertices(geo, 1e-5);
+
+            // Assign the EXACT analytic surface normal at every vertex,
+            // rather than letting computeVertexNormals() estimate one from
+            // neighboring triangles -- EXCEPT right at singular points of
+            // the surface (where multiple sheets meet, e.g. the "node"
+            // where three orange patches converge). At those points the
+            // true gradient is zero or near-zero, so normalizing it just
+            // amplifies floating-point noise into a near-random direction,
+            // which shows up as flickery/washed-out shading that can look
+            // like transparency. We detect that case (gradient length below
+            // GRAD_EPS) and fall back to the ordinary mesh-estimated normal
+            // there instead, which stays well-behaved even at a singularity.
+            const GRAD_EPS = 1e-3;
+
+            // Mesh-estimated normals as a fallback (computed on a clone so
+            // we don't disturb the position/index data used above).
+            const fallbackGeo = geo.clone();
+            fallbackGeo.computeVertexNormals();
+            const fallbackNormal = fallbackGeo.getAttribute('normal');
+
+            const posAttr = geo.getAttribute('position');
+            const normals = new Float32Array(posAttr.count * 3);
+            for (let i = 0; i < posAttr.count; i++) {
+                const x = posAttr.getX(i), y = posAttr.getY(i), z = posAttr.getZ(i);
+                const g = gradFunc(x, y, z);
+                const len = Math.hypot(g[0], g[1], g[2]);
+
+                if (len > GRAD_EPS) {
+                    normals[3 * i] = g[0] / len;
+                    normals[3 * i + 1] = g[1] / len;
+                    normals[3 * i + 2] = g[2] / len;
+                } else {
+                    normals[3 * i] = fallbackNormal.getX(i);
+                    normals[3 * i + 1] = fallbackNormal.getY(i);
+                    normals[3 * i + 2] = fallbackNormal.getZ(i);
+                }
+            }
+            geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+
+            const mat = new THREE.MeshPhongMaterial({
+                color: color,
+                side: THREE.DoubleSide,
+                shininess: 25,
+                flatShading: false
+            });
+
+            return new THREE.Mesh(geo, mat);
+        }
+
+        // Surface for e2 = 0, clipped to where e2^2 - 4e4 >= 0
+        const surfaceP1 = buildSurfaceMesh(f1_func, region1, gradF1, 0x008080); // teal
+        scene.add(surfaceP1);
+
+        // Surface for e2^2 - 4e4 = 0, clipped to where e2 >= 0
+        const surfaceP2 = buildSurfaceMesh(f2_func, region2, gradF2, 0xffa500); // orange
+        scene.add(surfaceP2);
+
+        // ============================================================
+        // 5. Frame the camera on the bounding box center
+        // ============================================================
+        const centerX = (bounds.xmin + bounds.xmax) / 2;
+        const centerY = (bounds.ymin + bounds.ymax) / 2;
+        const centerZ = (bounds.zmin + bounds.zmax) / 2;
+        controls.target.set(centerX, centerY, centerZ);
+        controls.update();
+
+        // ============================================================
+        // 6. Animation loop
+        // ============================================================
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // ============================================================
+        // 7. Resize handler
+        // ============================================================
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
