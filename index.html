@@ -173,6 +173,40 @@
             h1 {
                 font-size: 1.8rem;
             }
+
+            .misc-card {
+                background: #f8f9fa;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+                padding: 1.5rem;
+                transition: transform 0.2s ease, box-shadow 0.2s ease;
+            }
+
+            .misc-card:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            }
+
+            .misc-card p {
+                font-size: 1rem;
+                margin-bottom: 1rem;
+            }
+
+            .btn-primary {
+                display: inline-block;
+                background-color: #3498db;
+                color: white !important;
+                padding: 0.5rem 1.2rem;
+                border-radius: 4px;
+                font-size: 0.95rem;
+                text-decoration: none;
+                transition: background-color 0.3s ease;
+            }
+
+            .btn-primary:hover {
+                background-color: #2980b9;
+                text-decoration: none;
+            }
         }
     </style>
 </head>
@@ -270,12 +304,13 @@
 
             <div class="content-section" id="misc">
                 <h2>Misc</h2>
-                <h3 style="display: flex; align-items: center; flex-wrap: wrap; gap: 0.75rem; font-size: 0.95rem; font-weight: normal;">
-                    Set of eigenvalues of \(4\times4\) 2-locally psd matrices on the hyperplane \(x_1+x_2+x_3+x_4=1\text{.}\)
-                    <a href="https://jgacevedoh.github.io/animations/eigen2lpsd4b.html" target="_blank" rel="noopener noreferrer" style="font-size: 0.9rem; white-space: nowrap;">
-                        <span style="color: blue;">🔗 See</span>
+                <div class="misc-card">
+                    <h3 style="color: #2c3e50; font-size: 1.2rem; margin-bottom: 0.5rem;">Mathematical Animations</h3>
+                    <p>Interactive 3D visualization of the set of eigenvalues of \(4\times4\) 2-locally psd matrices on the hyperplane \(x_1+x_2+x_3+x_4=1\text{.}\)</p>
+                    <a href="https://jgacevedoh.github.io/animations/eigen2lpsd4b.html" target="_blank" rel="noopener noreferrer" class="btn-primary">
+                        ▶ View Animation
                     </a>
-                </h3>
+                </div>
             </div>
         </div>
         
