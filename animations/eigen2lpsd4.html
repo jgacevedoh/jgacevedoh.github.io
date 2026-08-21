@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UFO with axes</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #ffffff; /* Clean White Background */
+            font-family: sans-serif;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        // ============================================================
+        // 1. Scene / Camera / Renderer
+        // ============================================================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xffffff);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 100);
+        
+        // MATHEMATICAL AXES FIX:
+        // Set Z to be the "Up" direction
+        camera.up.set(0, 0, 1);
+        // Position camera so X points left and Y points right
+        camera.position.set(2.8, 2.8, 2.2);
+
+        const renderer = new THREE.WebGLRenderer({ 
+            antialias: true, 
+            alpha: false, 
+            powerPreference: 'high-performance' 
+        });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        container.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // ============================================================
+        // 2. Lighting (Adjusted for Z-Up configuration)
+        // ============================================================
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.7);
+        dirLight1.position.set(5, 7, 10); // Main light from +Z (Top)
+        scene.add(dirLight1);
+
+        const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.4);
+        dirLight2.position.set(-6, -4, -3);
+        scene.add(dirLight2);
+
+        // ============================================================
+        // 3. Mathematical fields
+        // ============================================================
+        function f1_func(x, y, z) {
+            const sum = x + y + z;
+            return x * y + x * z + y * z + (1.0 - sum) * sum;
+        }
+
+        function f2_func(x, y, z) {
+            const sum = x + y + z;
+            const e2 = x * y + x * z + y * z + (1.0 - sum) * sum;
+            const e4 = x * y * z * (1.0 - sum);
+            return e4 >= 0 ? e2 - 2.0 * Math.sqrt(e4) : e2 + 2.0 * Math.sqrt(-e4);
+        }
+
+        function gradF1(x, y, z) {
+            const x4 = 1.0 - x - y - z;
+            return [x4 - x, x4 - y, x4 - z];
+        }
+
+        function gradF2(x, y, z) {
+            const sum = x + y + z;
+            const x4 = 1.0 - sum;
+            const e2 = x * y + x * z + y * z + x4 * sum;
+            return [
+                (x4 - x) * (2 * e2 - 4 * y * z),
+                (x4 - y) * (2 * e2 - 4 * x * z),
+                (x4 - z) * (2 * e2 - 4 * x * y)
+            ];
+        }
+
+        function region1(x, y, z) { return f2_func(x, y, z) + 0.001; }
+        function region2(x, y, z) { return f1_func(x, y, z) + 0.001; }
+
+        const bounds = { xmin: -0.6, xmax: 1.1, ymin: -0.6, ymax: 1.1, zmin: -0.6, zmax: 1.1 };
+
+        // ============================================================
+        // 4. GPU-Accelerated Marching Tetrahedra
+        // ============================================================
+        const RESOLUTION = 200;
+
+        function marchingTetrahedra(fieldFunc, maskFunc, gradFunc, bounds, res) {
+            const { xmin, xmax, ymin, ymax, zmin, zmax } = bounds;
+            const dx = (xmax - xmin) / res, dy = (ymax - ymin) / res, dz = (zmax - zmin) / res;
+            const N = res + 1;
+            const field = new Float32Array(N * N * N);
+            
+            const px = new Float32Array(N), py = new Float32Array(N), pz = new Float32Array(N);
+            for(let i=0; i<N; i++) px[i] = xmin + i * dx;
+            for(let i=0; i<N; i++) py[i] = ymin + i * dy;
+            for(let i=0; i<N; i++) pz[i] = zmin + i * dz;
+
+            let index = 0;
+            for (let k = 0; k < N; k++) {
+                const pzk = pz[k];
+                for (let j = 0; j < N; j++) {
+                    const pyj = py[j];
+                    for (let i = 0; i < N; i++) { field[index++] = fieldFunc(px[i], pyj, pzk); }
+                }
+            }
+
+            const cornerOffset = [ [0,0,0], [1,0,0], [1,1,0], [0,1,0], [0,0,1], [1,0,1], [1,1,1], [0,1,1] ];
+            const cOffset = cornerOffset.map(c => c[0] + c[1] * N + c[2] * N * N);
+            const tets = [ [0,1,2,6], [0,1,5,6], [0,3,2,6], [0,3,7,6], [0,4,5,6], [0,4,7,6] ];
+
+            const positions = [];
+            function interp(pA, fA, pB, fB) {
+                const t = fA / (fA - fB);
+                return [pA[0] + t * (pB[0] - pA[0]), pA[1] + t * (pB[1] - pA[1]), pA[2] + t * (pB[2] - pA[2])];
+            }
+
+            function clipTriangleByMask(a, b, c, maskFunc) {
+                const vals = [ maskFunc(a[0], a[1], a[2]), maskFunc(b[0], b[1], b[2]), maskFunc(c[0], c[1], c[2]) ];
+                const poly = [a, b, c], out = [];
+                for (let i = 0; i < 3; i++) {
+                    const curr = poly[i], currVal = vals[i];
+                    const next = poly[(i + 1) % 3], nextVal = vals[(i + 1) % 3];
+                    if (currVal >= 0) out.push(curr);
+                    if ((currVal >= 0) !== (nextVal >= 0)) {
+                        const t = currVal / (currVal - nextVal);
+                        out.push([curr[0] + t * (next[0] - curr[0]), curr[1] + t * (next[1] - curr[1]), curr[2] + t * (next[2] - curr[2])]);
+                    }
+                }
+                return out; 
+            }
+
+            function addTri(p0, p1, p2, outsideRef, maskFunc, gradFunc) {
+                const ux = p1[0] - p0[0], uy = p1[1] - p0[1], uz = p1[2] - p0[2];
+                const vx = p2[0] - p0[0], vy = p2[1] - p0[1], vz = p2[2] - p0[2];
+                const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+
+                const ddx = outsideRef[0] - p0[0], ddy = outsideRef[1] - p0[1], ddz = outsideRef[2] - p0[2];
+                if (nx * ddx + ny * ddy + nz * ddz < 0) { const tmp = p1; p1 = p2; p2 = tmp; }
+
+                const clipped = clipTriangleByMask(p0, p1, p2, maskFunc);
+                for (let i = 1; i < clipped.length - 1; i++) {
+                    let p0c = clipped[0], p1c = clipped[i], p2c = clipped[i + 1];
+                    const ux2 = p1c[0] - p0c[0], uy2 = p1c[1] - p0c[1], uz2 = p1c[2] - p0c[2];
+                    const vx2 = p2c[0] - p0c[0], vy2 = p2c[1] - p0c[1], vz2 = p2c[2] - p0c[2];
+                    const tx = uy2 * vz2 - uz2 * vy2, ty = uz2 * vx2 - ux2 * vz2, tz = ux2 * vy2 - uy2 * vx2;
+
+                    const mx = (p0c[0] + p1c[0] + p2c[0]) / 3, my = (p0c[1] + p1c[1] + p2c[1]) / 3, mz = (p0c[2] + p1c[2] + p2c[2]) / 3;
+                    const g = gradFunc(mx, my, mz);
+
+                    if (tx * g[0] + ty * g[1] + tz * g[2] < 0) { const tmp = p1c; p1c = p2c; p2c = tmp; }
+                    positions.push(p0c[0], p0c[1], p0c[2], p1c[0], p1c[1], p1c[2], p2c[0], p2c[1], p2c[2]);
+                }
+            }
+
+            const cp = [[0,0,0], [0,0,0], [0,0,0], [0,0,0], [0,0,0], [0,0,0], [0,0,0], [0,0,0]];
+            const cf = new Float32Array(8);
+            const inPts = [null, null, null, null], outPts = [null, null, null, null];
+            const inF = new Float32Array(4), outF = new Float32Array(4);
+
+            for (let k = 0; k < res; k++) {
+                for (let j = 0; j < res; j++) {
+                    const baseIdx = 0 + j * N + k * N * N;
+                    for (let i = 0; i < res; i++) {
+                        const currIdx = baseIdx + i;
+                        let allOutside = true, allInside = true;
+
+                        for(let c = 0; c < 8; c++) {
+                            const val = field[currIdx + cOffset[c]];
+                            cf[c] = val;
+                            if (val < 0) allOutside = false; else allInside = false;
+                            const ox = cornerOffset[c][0], oy = cornerOffset[c][1], oz = cornerOffset[c][2];
+                            cp[c][0] = px[i + ox]; cp[c][1] = py[j + oy]; cp[c][2] = pz[k + oz];
+                        }
+
+                        if (allOutside || allInside) continue;
+
+                        for (let t = 0; t < 6; t++) {
+                            const tet = tets[t];
+                            let inCount = 0, outCount = 0;
+                            for(let v = 0; v < 4; v++) {
+                                const pIdx = tet[v];
+                                const val = cf[pIdx];
+                                if(val < 0) { inPts[inCount] = cp[pIdx]; inF[inCount++] = val; } 
+                                else { outPts[outCount] = cp[pIdx]; outF[outCount++] = val; }
+                            }
+
+                            if (inCount === 0 || inCount === 4) continue;
+
+                            if (inCount === 1 || inCount === 3) {
+                                const isoP = inCount === 1 ? inPts[0] : outPts[0];
+                                const isoF = inCount === 1 ? inF[0] : outF[0];
+                                const othersP = inCount === 1 ? outPts : inPts;
+                                const othersF = inCount === 1 ? outF : inF;
+                                addTri(
+                                    interp(isoP, isoF, othersP[0], othersF[0]), interp(isoP, isoF, othersP[1], othersF[1]),
+                                    interp(isoP, isoF, othersP[2], othersF[2]), inCount === 1 ? othersP[0] : isoP, maskFunc, gradFunc
+                                );
+                            } else {
+                                const p_AC = interp(inPts[0], inF[0], outPts[0], outF[0]), p_CB = interp(inPts[1], inF[1], outPts[0], outF[0]);
+                                const p_BD = interp(inPts[1], inF[1], outPts[1], outF[1]), p_DA = interp(inPts[0], inF[0], outPts[1], outF[1]);
+                                addTri(p_AC, p_CB, p_BD, outPts[0], maskFunc, gradFunc);
+                                addTri(p_AC, p_BD, p_DA, outPts[0], maskFunc, gradFunc);
+                            }
+                        }
+                    }
+                }
+            }
+            return positions;
+        }
+
+        function buildSurfaceMesh(fieldFunc, maskFunc, gradFunc, colorHex) {
+            const positions = marchingTetrahedra(fieldFunc, maskFunc, gradFunc, bounds, RESOLUTION);
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            const posAttr = geo.getAttribute('position');
+            const normals = new Float32Array(posAttr.count * 3);
+
+            for (let i = 0; i < posAttr.count; i++) {
+                const x = posAttr.getX(i), y = posAttr.getY(i), z = posAttr.getZ(i);
+                const g = gradFunc(x, y, z);
+                const len = Math.sqrt(g[0]*g[0] + g[1]*g[1] + g[2]*g[2]);
+                if (len > 1e-6) {
+                    normals[3 * i] = g[0] / len; normals[3 * i + 1] = g[1] / len; normals[3 * i + 2] = g[2] / len;
+                } else {
+                    normals[3 * i] = 0; normals[3 * i + 1] = 1; normals[3 * i + 2] = 0;
+                }
+            }
+            geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+
+            const mat = new THREE.MeshPhysicalMaterial({
+                color: colorHex, side: THREE.DoubleSide, roughness: 0.3, metalness: 0.1, clearcoat: 0.5, clearcoatRoughness: 0.2
+            });
+            return new THREE.Mesh(geo, mat);
+        }
+
+        scene.add(buildSurfaceMesh(f1_func, region1, gradF1, 0x118AB2)); // Teal
+        scene.add(buildSurfaceMesh(f2_func, region2, gradF2, 0xFFD166)); // Gold
+
+        // ============================================================
+        // 5. Boundary Lines
+        // ============================================================
+        class AnalyticClosedCurve extends THREE.Curve {
+            constructor(pointFunc) { super(); this.pointFunc = pointFunc; }
+            getPoint(t, target = new THREE.Vector3()) {
+                const p = this.pointFunc(2 * Math.PI * t);
+                return target.set(p[0], p[1], p[2]);
+            }
+        }
+
+        function addAnalyticBoundaryCurve(pointFunc) {
+            const curve = new AnalyticClosedCurve(pointFunc);
+            const tube = new THREE.TubeGeometry(curve, 320, 0.003, 8, true);
+            const mat = new THREE.MeshBasicMaterial({ color: 0x333333 }); 
+            scene.add(new THREE.Mesh(tube, mat));
+        }
+
+        const c1 = 1/3, c2 = 1/Math.sqrt(3);
+        addAnalyticBoundaryCurve((t) => [0, c1 + c1 * Math.cos(t) + c2 * Math.sin(t), c1 + c1 * Math.cos(t) - c2 * Math.sin(t)]);
+        addAnalyticBoundaryCurve((t) => [c1 + c1 * Math.cos(t) + c2 * Math.sin(t), 0, c1 + c1 * Math.cos(t) - c2 * Math.sin(t)]);
+        addAnalyticBoundaryCurve((t) => [c1 + c1 * Math.cos(t) + c2 * Math.sin(t), c1 + c1 * Math.cos(t) - c2 * Math.sin(t), 0]);
+        
+        const r = Math.sqrt(2/3), e10 = 1/Math.sqrt(2), e11 = -1/Math.sqrt(2), e20 = 1/Math.sqrt(6), e21 = 1/Math.sqrt(6), e22 = -2/Math.sqrt(6);
+        addAnalyticBoundaryCurve((t) => {
+            const a = r * Math.cos(t), b = r * Math.sin(t);
+            return [1/3 + a*e10 + b*e20, 1/3 + a*e11 + b*e21, 1/3 + b*e22];
+        });
+
+        // ============================================================
+        // 6. Black Mathematical Axes
+        // ============================================================
+        const axesGroup = new THREE.Group();
+        const axisMat = new THREE.LineBasicMaterial({ color: 0x000000 }); 
+        
+        axesGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-0.7,0,0), new THREE.Vector3(1.3,0,0)]), axisMat));
+        axesGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,-0.7,0), new THREE.Vector3(0,1.3,0)]), axisMat));
+        axesGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,-0.7), new THREE.Vector3(0,0,1.3)]), axisMat));
+
+        function createText(text, scaleX=0.25, scaleY=0.125, isBold=false) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 256; canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            ctx.font = `${isBold ? 'bold' : ''} 56px sans-serif`;
+            ctx.fillStyle = "#000000"; 
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText(text, 128, 64);
+            const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), depthTest: false }));
+            sprite.scale.set(scaleX, scaleY, 1);
+            return sprite;
+        }
+
+        const lblX = createText("X", 0.35, 0.175, true); lblX.position.set(1.4, 0, 0); axesGroup.add(lblX);
+        const lblY = createText("Y", 0.35, 0.175, true); lblY.position.set(0, 1.4, 0); axesGroup.add(lblY);
+        const lblZ = createText("Z", 0.35, 0.175, true); lblZ.position.set(0, 0, 1.4); axesGroup.add(lblZ);
+        
+        const t0 = createText("0"); t0.position.set(-0.06, -0.06, 0); axesGroup.add(t0);
+        
+        [-0.5, 1.0].forEach(v => {
+            axesGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(v, -0.04, 0), new THREE.Vector3(v, 0.04, 0)]), axisMat));
+            let tX = createText(v.toString()); tX.position.set(v, -0.1, 0); axesGroup.add(tX);
+            
+            axesGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-0.04, v, 0), new THREE.Vector3(0.04, v, 0)]), axisMat));
+            let tY = createText(v.toString()); tY.position.set(-0.1, v, 0); axesGroup.add(tY);
+            
+            axesGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, -0.04, v), new THREE.Vector3(0, 0.04, v)]), axisMat));
+            let tZ = createText(v.toString()); tZ.position.set(0, -0.1, v); axesGroup.add(tZ);
+        });
+        scene.add(axesGroup);
+
+        controls.target.set(0.25, 0.25, 0.25);
+        controls.update();
+
+        // ============================================================
+        // 7. Render Loop
+        // ============================================================
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
