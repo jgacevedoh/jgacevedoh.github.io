@@ -35,7 +35,6 @@
 
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 100);
         
-        // MATHEMATICAL AXES FIX:
         // Set Z to be the "Up" direction
         camera.up.set(0, 0, 1);
         // Position camera so X points left and Y points right
@@ -55,7 +54,7 @@
         controls.dampingFactor = 0.05;
 
         // ============================================================
-        // 2. Lighting (Adjusted for Z-Up configuration)
+        // 2. Lighting
         // ============================================================
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
         scene.add(ambientLight);
@@ -69,7 +68,7 @@
         scene.add(dirLight2);
 
         // ============================================================
-        // 3. Mathematical fields
+        // 3. Functions
         // ============================================================
         function f1_func(x, y, z) {
             const sum = x + y + z;
@@ -291,7 +290,7 @@
         });
 
         // ============================================================
-        // 6. Black Mathematical Axes
+        // 6. Axes
         // ============================================================
         const axesGroup = new THREE.Group();
         const axisMat = new THREE.LineBasicMaterial({ color: 0x000000 }); 
